@@ -40,12 +40,15 @@ public class CameraRenderer
 
         Setup();
         DrawVisibleGeometry();
+        //需要显卡配合 绘制一次 一次draw call
         Submit();
     }
 
     private void Setup()
     {
+        //读取摄像机上设置的属性矩阵 unity_MatrixVP  摄像机位置 角度 正交/透视参数 
         context.SetupCameraProperties(camera);
+        //清理render target 。。屏幕 、 rt --> framebuffer
         buffer.ClearRenderTarget(true, true, Color.clear);
         buffer.BeginSample(bufferName);
         ExecuteBuffer();
@@ -53,6 +56,7 @@ public class CameraRenderer
 
     private void ExecuteBuffer()
     {
+        //把buffer中的命令 放到context中 用于后续commit到GPU
         context.ExecuteCommandBuffer(buffer);
         buffer.Clear();
     }
@@ -64,6 +68,7 @@ public class CameraRenderer
     private void Submit()
     {
         buffer.EndSample(bufferName);
+        ExecuteBuffer();
         context.Submit();
     }
 
@@ -74,13 +79,21 @@ public class CameraRenderer
         //指出允许使用哪种着色器通道
         var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting);
         //指出允许哪些渲染队列
-        var filteringSettings = new FilteringSettings(RenderQueueRange.all);
-
+        var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
+        
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );
 
         context.DrawSkybox(camera);
+
+        sortingSetting.criteria = SortingCriteria.CommonTransparent;
+        drawingSettings.sortingSettings = sortingSetting;
+        filteringSettings.renderQueueRange = RenderQueueRange.transparent;
+        
+        context.DrawRenderers(
+            cullingResults, ref drawingSettings, ref filteringSettings
+        );
     }
 
     private bool Cull()
