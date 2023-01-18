@@ -10,7 +10,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 
-public class CameraRenderer
+public partial class CameraRenderer
 {
     ScriptableRenderContext context;
 
@@ -33,6 +33,7 @@ public class CameraRenderer
         this.context = context;
         this.camera = camera;
 
+        PrepareForSceneWindow();
         if (!Cull())
         {
             return;
@@ -40,6 +41,8 @@ public class CameraRenderer
 
         Setup();
         DrawVisibleGeometry();
+        DrawUnsupportedShaders();
+        DrawGizmo();
         //需要显卡配合 绘制一次 一次draw call
         Submit();
     }
@@ -49,7 +52,11 @@ public class CameraRenderer
         //读取摄像机上设置的属性矩阵 unity_MatrixVP  摄像机位置 角度 正交/透视参数 
         context.SetupCameraProperties(camera);
         //清理render target 。。屏幕 、 rt --> framebuffer
-        buffer.ClearRenderTarget(true, true, Color.clear);
+        var clearFlags = camera.clearFlags;
+        buffer.ClearRenderTarget(
+            clearFlags <= CameraClearFlags.Depth,
+            clearFlags == CameraClearFlags.Color,
+            clearFlags == CameraClearFlags.Color ? camera.backgroundColor.linear: Color.clear);
         buffer.BeginSample(bufferName);
         ExecuteBuffer();
     }
@@ -80,7 +87,7 @@ public class CameraRenderer
         var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting);
         //指出允许哪些渲染队列
         var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
-        
+
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );
@@ -90,7 +97,7 @@ public class CameraRenderer
         sortingSetting.criteria = SortingCriteria.CommonTransparent;
         drawingSettings.sortingSettings = sortingSetting;
         filteringSettings.renderQueueRange = RenderQueueRange.transparent;
-        
+
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );
