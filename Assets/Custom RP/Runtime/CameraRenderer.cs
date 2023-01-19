@@ -28,11 +28,17 @@ public partial class CameraRenderer
         name = bufferName,
     };
 
+    /// <summary>
+    /// 最终渲染方式
+    /// </summary>
+    /// <param name="context"></param>
+    /// <param name="camera"></param>
     public void Render(ScriptableRenderContext context, Camera camera)
     {
         this.context = context;
         this.camera = camera;
 
+        PrepareBuffer();
         PrepareForSceneWindow();
         if (!Cull())
         {
@@ -57,7 +63,11 @@ public partial class CameraRenderer
             clearFlags <= CameraClearFlags.Depth,
             clearFlags == CameraClearFlags.Color,
             clearFlags == CameraClearFlags.Color ? camera.backgroundColor.linear: Color.clear);
-        buffer.BeginSample(bufferName);
+        // buffer.ClearRenderTarget(
+        //     true,
+        //     true,
+        //     Color.clear);
+        buffer.BeginSample(SampleName);
         ExecuteBuffer();
     }
 
@@ -74,7 +84,7 @@ public partial class CameraRenderer
     /// </summary>
     private void Submit()
     {
-        buffer.EndSample(bufferName);
+        buffer.EndSample(SampleName);
         ExecuteBuffer();
         context.Submit();
     }
@@ -87,7 +97,7 @@ public partial class CameraRenderer
         var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting);
         //指出允许哪些渲染队列
         var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
-
+        
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );
@@ -97,7 +107,7 @@ public partial class CameraRenderer
         sortingSetting.criteria = SortingCriteria.CommonTransparent;
         drawingSettings.sortingSettings = sortingSetting;
         filteringSettings.renderQueueRange = RenderQueueRange.transparent;
-
+        
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );
@@ -108,6 +118,7 @@ public partial class CameraRenderer
         ScriptableCullingParameters p;
         if (camera.TryGetCullingParameters(out p))
         {
+            //有内容可以显示
             cullingResults = context.Cull(ref p);
             return true;
         }

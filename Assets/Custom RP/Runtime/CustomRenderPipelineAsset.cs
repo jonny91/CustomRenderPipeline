@@ -12,11 +12,14 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+//通过Rendering/Custom Render Pipeline菜单创建 Asset文件
 [CreateAssetMenu(menuName = "Rendering/Custom Render Pipeline")]
 public class CustomRenderPipelineAsset : RenderPipelineAsset
 {
     protected override RenderPipeline CreatePipeline()
     {
+        //实际渲染对象是 CustomRenderPipeline的实例
+        //Asset是对 实际渲染函数的包装
         return new CustomRenderPipeline();
     }
 }

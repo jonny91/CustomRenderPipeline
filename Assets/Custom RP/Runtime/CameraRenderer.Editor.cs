@@ -11,6 +11,7 @@
 using UnityEditor;
 #endif
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 
 public partial class CameraRenderer
@@ -18,8 +19,10 @@ public partial class CameraRenderer
     private partial void DrawUnsupportedShaders();
     private partial void DrawGizmo();
     private partial void PrepareForSceneWindow();
+    private partial void PrepareBuffer();
 
 #if UNITY_EDITOR
+    public string SampleName { get; set; }
     private static Material errorMaterial;
 
     static ShaderTagId[] legacyShaderTagIds =
@@ -39,6 +42,14 @@ public partial class CameraRenderer
             context.DrawGizmos(camera, GizmoSubset.PreImageEffects);
             context.DrawGizmos(camera, GizmoSubset.PostImageEffects);
         }
+    }
+
+    private partial void PrepareBuffer()
+    {
+        //取camera.name 会有78b的GC 所以正式环境不取
+        Profiler.BeginSample("Editor Only");
+        buffer.name = SampleName = camera.name;
+        Profiler.EndSample();
     }
 
     private partial void PrepareForSceneWindow()
