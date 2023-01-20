@@ -46,7 +46,7 @@
 
 使用自定义流程，构建最基础的渲染管线
 
-unity默认使用的是 buildin(内置渲染管线)，可以通过创建自定义的渲染Asset来创建自定义管线。这个Asset资产可以理解为对渲染方式的包装序列化成`ScriptableObject`,方便在unity中可视化切换。
+unity默认使用的是 builtin(内置渲染管线)，可以通过创建自定义的渲染Asset来创建自定义管线。这个Asset资产可以理解为对渲染方式的包装序列化成`ScriptableObject`,方便在unity中可视化切换。
 
 
 
@@ -472,3 +472,336 @@ buffer.ClearRenderTarget(
 代码都在这里：
 
 > https://github.com/jonny91/CustomRenderPipeline.git
+
+
+
+
+
+----------
+
+# Draw Calls
+
+## Shaders
+
+<font color="#ff3283">**这将不会是一篇Step By Step的文章。提供给和我一样，之前有内置渲染管线Shader编写基础的同学阅读。**</font>
+
+Mesh是CPU告诉GPU画什么
+
+Shader是告诉GPU怎么画
+
+Unity的可编程渲染管线可以使用`Shader Graph`来写`Shader`，但是这里会自己写代码来实现。这样可以充分理解Shader是如何工作的。
+
+### 一个简单的Shader
+
+这个Shader 纯手写，不使用Unity内置库
+
+目录结构及Shader内容
+
+![2-1](.\CustomRenderPipeline\2-1.png)
+
+```glsl
+// Unlit.shader
+
+Shader "Custom RP/Unlit"
+{
+    Properties {}
+
+    SubShader
+    {
+        Pass
+        {
+            //内置管线使用 CGPROGRAM 
+            //URP 使用 HLSLPROGRAM
+            HLSLPROGRAM
+            #pragma vertex UnlitPassVertex
+			#pragma fragment UnlitPassFragment
+            //把所有hlsl代码都放在这个文件中
+            #include "UnlitPass.hlsl"
+            ENDHLSL
+        }
+    }
+}
+
+```
+
+
+
+因为没有使用Unity的库，所以申明一下用到的变量，防止语法报错
+
+```glsl
+// UnityInput.hlsl
+
+#ifndef CUSTOM_UNITY_INPUT_INCLUDED
+#define CUSTOM_UNITY_INPUT_INCLUDED
+
+float4x4 unity_ObjectToWorld;
+float4x4 unity_MatrixVP;
+
+#endif
+
+```
+
+```glsl
+// Common.hlsl
+
+#ifndef CUSTOM_COMMON_INCLUDED
+#define CUSTOM_COMMON_INCLUDED
+
+#include "UnityInput.hlsl"
+
+float3 TransformObjectToWorld(float3 positionOS)
+{
+    return mul(unity_ObjectToWorld, float4(positionOS, 1)).xyz;
+}
+
+float4 TransformWorldToHClip(float3 positionWS)
+{
+    return mul(unity_MatrixVP, float4(positionWS, 1.0));
+}
+
+#endif
+
+```
+
+```glsl
+// UnlitPass.hlsl
+
+// 和c一样 重复include 会造成代码重复 所以加个判断的宏
+#ifndef CUSTOM_UNLIT_PASS_INCLUDED
+#define CUSTOM_UNLIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+float4 UnlitPassVertex(float3 positionOS:POSITION):SV_POSITION
+{
+    // https://zhuanlan.zhihu.com/p/261097735
+    // 模型空间 -> 世界空间
+    float3 positionWS = TransformObjectToWorld(positionOS.xyz);
+    //世界空间 -> 视图空间 -> 投影空间
+    return TransformWorldToHClip(float4(positionWS, 1));
+}
+
+float4 UnlitPassFragment():SV_TARGET
+{
+    return float4(0.6, 0.3, 0.2, 1);
+}
+
+#endif
+
+```
+
+
+
+最终效果
+
+![2-1](.\CustomRenderPipeline\2-2.png)
+
+
+
+### 使用URP库替代
+
+```glsl
+// Common.hlsl
+
+#ifndef CUSTOM_COMMON_INCLUDED
+#define CUSTOM_COMMON_INCLUDED
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "UnityInput.hlsl"
+
+// float3 TransformObjectToWorld(float3 positionOS)
+// {
+//     return mul(unity_ObjectToWorld, float4(positionOS, 1)).xyz;
+// }
+//
+// float4 TransformWorldToHClip(float3 positionWS)
+// {
+//     return mul(unity_MatrixVP, float4(positionWS, 1.0));
+// }
+
+//SpaceTransforms 使用 UNITY_MATRIX_xxx矩阵
+#define UNITY_MATRIX_M unity_ObjectToWorld
+#define UNITY_MATRIX_I_M unity_WorldToObject
+#define UNITY_MATRIX_V unity_MatrixV
+#define UNITY_MATRIX_VP unity_MatrixVP
+#define UNITY_MATRIX_P glstate_matrix_projection
+#define UNITY_PREV_MATRIX_M   unity_MatrixPreviousM
+#define UNITY_PREV_MATRIX_I_M unity_MatrixPreviousMI
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/SpaceTransforms.hlsl"
+
+#endif
+
+```
+
+去除了自定义的`TransformObjectToWorld` 以及  `TransformWorldToHClip` 函数 用 Library库中的 内置函数代替
+
+因为 `Packages/com.unity.render-pipelines.core/ShaderLibrary/SpaceTransforms.hlsl`内置库中很使用 `UNITY_MATRIX_XX`的矩阵宏，我们没有定义 所以补上定义。
+
+```glsl
+// UnityInput.hlsl
+
+#ifndef CUSTOM_UNITY_INPUT_INCLUDED
+#define CUSTOM_UNITY_INPUT_INCLUDED
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+
+float4x4 unity_ObjectToWorld;
+float4x4 unity_WorldToObject;
+real4 unity_WorldTransformParams;
+
+float4x4 unity_MatrixVP;
+float4x4 unity_MatrixV;
+float4x4 glstate_matrix_projection;
+
+float4x4 unity_MatrixPreviousM;
+float4x4 unity_MatrixPreviousMI;
+
+
+#endif
+
+```
+
+以上原文中很多宏缺失，我参阅了源码补上了。
+
+其实记不住这么多宏是干嘛的，翻阅了源码后发现 `BuiltIn`和 `URP`管线源码中都有`UnityInput.hlsl`的定义，其中定义了一样的宏，后面应该会提到。暂时照抄吧。简单来说就是Unity给出的一些变换矩阵，只是各种宏定义了不同的名字。
+
+表现效果不变。
+
+
+
+### 自定义属性
+
+这一部分和`BuiltIn Shader`没什么区别，加个颜色参数看下表现
+
+```glsl
+// Unlit.shader
+
+Shader "Custom RP/Unlit"
+{
+    Properties {
+        _BaseColor("Color", Color) = (1,1,1,1)
+    }
+
+    SubShader
+    {
+        ...
+    }
+}
+
+```
+
+```glsl
+// 和c一样 重复include 会造成代码重复 所以加个判断的宏
+#ifndef CUSTOM_UNLIT_PASS_INCLUDED
+#define CUSTOM_UNLIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+float4 _BaseColor;
+
+...
+    
+float4 UnlitPassFragment():SV_TARGET
+{
+    return _BaseColor;
+}
+
+#endif
+
+```
+
+
+
+![2-3](.\CustomRenderPipeline\2-3.png)
+
+同样可以在面板上自定义改变颜色
+
+## Batching
+
+每`Drawcall`调用都需要 CPU 和 GPU 之间的通信。如果CPU给GPU发送数据很多，那么很浪费时间。当 CPU 忙于发送数据时，它不能做其他事情。这两个问题都会降低帧速率。
+
+> Every draw call requires communication between the CPU and GPU. If a lot of data has to be sent to the GPU then it might end up wasting time by waiting. And while the CPU is busy sending data it can't do other things. Both issues can lower the frame rate.
+
+这部分原文讲的很好。所以放下原文。
+
+在场景上放20个Cube
+
+![](.\CustomRenderPipeline\2-4.png)
+
+Frame Debug 显示绘制了22次。其中1次清除渲染目标 + 20次画Cube + 1次画天空盒。
+
+Saving Batch 0次。
+
+State面板里不包含Clear操作。
+
+
+
+### SRP Batcher
+
+srp batcher不会减少调用的数量，但是会使流程精简。他会在GPU上缓存材质的属性，所以CPU不用每次都发送了，减少了传输的数据，也减轻了CPU的工作。
+
+现在 SRP Batcher 并没有生效，查看Shader对应的面板，上面有提示问题。
+
+![](.\CustomRenderPipeline\2-5.png)
+
+是我们Shader没有支持，修改下Shader
+
+```glsl
+// UnlitPass.hlsl
+
+#ifndef CUSTOM_UNLIT_PASS_INCLUDED
+#define CUSTOM_UNLIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+// 不是所有平台都支持 常量缓冲区
+// cbuffer UnityPerMaterial
+// {
+//     float4 _BaseColor;
+// }
+
+CBUFFER_START(UnityPerMaterial) 
+    float4 _BaseColor;
+CBUFFER_END
+
+...
+
+#endif
+```
+
+修改后发现还有问题
+
+![](.\CustomRenderPipeline\2-6.png)
+
+```glsl
+// UnityInput.hlsl
+
+CBUFFER_START(UnityPerDraw)
+    float4x4 unity_ObjectToWorld;
+    float4x4 unity_WorldToObject;
+    float4 unity_LODFade;
+    real4 unity_WorldTransformParams;
+CBUFFER_END
+```
+
+```c#
+// CustomRenderPipeline
+
+    public CustomRenderPipeline()
+    {
+       GraphicsSettings.useScriptableRenderPipelineBatching = true;
+    }
+```
+
+以上这些修改我其实不知道为什么，inspector面板上提示什么加什么。我理解的是 这些矩阵默认并不在 我们指定的 cbuffer中。
+
+
+
+![](./CustomRenderPipeline/2-7.png)
+
+一顿操作后没问题了。
+
+![](./CustomRenderPipeline/2-8.png)
+
+Frame Debug上显示 只有3次绘制了。其中20次 Cube 合并成了一次。
