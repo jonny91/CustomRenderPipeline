@@ -16,10 +16,13 @@ using UnityEngine.Rendering;
 [CreateAssetMenu(menuName = "Rendering/Custom Render Pipeline")]
 public class CustomRenderPipelineAsset : RenderPipelineAsset
 {
+    [SerializeField]
+    bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true;
+
     protected override RenderPipeline CreatePipeline()
     {
         //实际渲染对象是 CustomRenderPipeline的实例
         //Asset是对 实际渲染函数的包装
-        return new CustomRenderPipeline();
+        return new CustomRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher);
     }
 }

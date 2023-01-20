@@ -805,3 +805,569 @@ CBUFFER_END
 ![](./CustomRenderPipeline/2-8.png)
 
 Frame Debug上显示 只有3次绘制了。其中20次 Cube 合并成了一次。
+
+
+
+### 很多颜色
+
+上面案例中设置了4个颜色 对应4个材质。他们合批到了一起。但是很多情况下不可能为每个颜色单独设置材质球，一般都是靠代码来控制的，所以做个测试。
+
+写个脚本
+
+```csharp
+/*************************************************************************************
+ *
+ * 文 件 名:   PerObjectMaterialProperties.cs
+ * 描    述: 
+ * 
+ * 创 建 者：  洪金敏 
+ * 创建时间：  2023-01-20 20:28:04
+*************************************************************************************/
+
+using UnityEngine;
+using Random = UnityEngine.Random;
+
+[DisallowMultipleComponent]
+public class PerObjectMaterialProperties : MonoBehaviour
+{
+    static int baseColorId = Shader.PropertyToID("_BaseColor");
+    static MaterialPropertyBlock block;
+
+    private void Awake()
+    {
+        OnValidate();
+        // ClearBlock();
+    }
+
+    void OnValidate()
+    {
+        if (block == null)
+        {
+            block = new MaterialPropertyBlock();
+        }
+
+        block.SetColor(baseColorId, new Color(Random.value, Random.value, Random.value, 1));
+        GetComponent<Renderer>().SetPropertyBlock(block);
+    }
+
+    public void ClearBlock()
+    {
+        if (block != null)
+        {
+            block.Clear();
+        }
+    }
+}
+```
+
+挂载到10个Cube上，脚本会给材质球对应的Shader Block设置随机的颜色。
+
+![](./CustomRenderPipeline/2-9.png)
+
+测试发现，没有挂脚本的Cube和之前一样合批了，但是修改过Block的 0 ~ 9 的10个cube 并没有合批。
+
+
+
+## GPU实例化
+
+还有一种合批的方式，叫GPU实例化。
+
+通过一次为具有相同网格的多个对象发出单个Draw Call。CPU 收集所有每个对象的变换和材质属性，并将它们放入发送到 GPU 的数组中。然后 GPU 遍历所有条目并按照提供的顺序呈现它们。
+
+```glsl
+...
+            //内置管线使用 CGPROGRAM 
+            //URP 使用 HLSLPROGRAM
+            HLSLPROGRAM
+            #pragma multi_compile_instancing
+            #pragma vertex UnlitPassVertex
+			#pragma fragment UnlitPassFragment
+            //把所有hlsl代码都放在这个文件中
+            #include "UnlitPass.hlsl"
+            ENDHLSL
+...
+```
+
+shader 面板中会多出GPU Instancing的选项，全部勾上。
+
+![](./CustomRenderPipeline/2-10.png)
+
+这个操作会让Shader产生两种变体。
+
+1. 使用GPU Instancing支持
+2. 不支持GPU Instancing
+
+
+
+```glsl
+// UnlitPass.hlsl
+
+// 和c一样 重复include 会造成代码重复 所以加个判断的宏
+#ifndef CUSTOM_UNLIT_PASS_INCLUDED
+#define CUSTOM_UNLIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+// 不是所有平台都支持 常量缓冲区
+// cbuffer UnityPerMaterial
+// {
+//     float4 _BaseColor;
+// }
+
+// CBUFFER_START(UnityPerMaterial) 
+//     float4 _BaseColor;
+// CBUFFER_END
+
+UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
+UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
+
+struct Attributes
+{
+    float3 positionOS: POSITION;
+    // 会根据是否支持 GPU INSTANCE 来添加 attribute
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+struct Varyings {
+    float4 positionCS : SV_POSITION;
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+Varyings  UnlitPassVertex(Attributes input)
+{
+    Varyings output;
+    UNITY_SETUP_INSTANCE_ID(input);
+    UNITY_TRANSFER_INSTANCE_ID(input, output);
+    float3 positionWS = TransformObjectToWorld(input.positionOS);
+    output.positionCS = TransformWorldToHClip(positionWS);
+    return output;
+}
+
+float4 UnlitPassFragment (Varyings input) : SV_TARGET {
+    UNITY_SETUP_INSTANCE_ID(input);
+    return UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+}
+
+#endif
+
+```
+
+修改的内容实际上就是调用Unity其他的宏定义函数，把顶点数据放进数组/从数组里取数据。
+
+![](./CustomRenderPipeline/2-11.png)
+
+GPU Instance只会对材质相同的进行合批处理。
+
+
+
+## 绘制很多实例化对象
+
+这是一个GPU Instance的应用。场景中有很多对象。
+
+```c#
+using UnityEngine;
+
+public class MeshBall : MonoBehaviour
+{
+    static int baseColorId = Shader.PropertyToID("_BaseColor");
+
+    [SerializeField]
+    Mesh mesh = default;
+
+    [SerializeField]
+    Material material = default;
+
+    Matrix4x4[] matrices = new Matrix4x4[1023];
+    Vector4[] baseColors = new Vector4[1023];
+
+    MaterialPropertyBlock block;
+
+    void Awake()
+    {
+        for (int i = 0; i < matrices.Length; i++)
+        {
+            matrices[i] = Matrix4x4.TRS(
+                Random.insideUnitSphere * 10f, Quaternion.identity, Vector3.one
+            );
+            baseColors[i] =
+                new Vector4(Random.value, Random.value, Random.value, 1f);
+        }
+    }
+
+    void Update()
+    {
+        if (block == null)
+        {
+            block = new MaterialPropertyBlock();
+            block.SetVectorArray(baseColorId, baseColors);
+        }
+
+        Graphics.DrawMeshInstanced(mesh, 0, material, matrices, 1023, block);
+    }
+}
+```
+
+实例中 把1023个球 位置、颜色属性一桶防盗block中，一起调用绘制。
+
+![](./CustomRenderPipeline/2-12.png)
+
+可以看到只绘制了3次。
+
+> 原文中解释：
+>
+> 它需要多少次绘制调用取决于平台，因为每个绘制调用的最大缓冲区大小不同。在我的例子中，渲染需要三个绘制调用。
+
+请注意，各个网格的绘制顺序与我们提供数据的顺序相同。除此之外没有任何类型的排序或剔除，尽管整个批次一旦超出视锥体就会消失。
+
+## 动态合批
+
+还有第三种减少绘制调用的方法，称为动态批处理。这是一种古老的技术，它将共享相同材质的多个小网格组合成一个更大的网格，然后一起绘制。动态合批适用于小网格。
+
+如果要看效果需要禁用 SRP Batcher.
+
+```c#
+//CameraRenderer
+var drawingSettings = new DrawingSettings(
+			unlitShaderTagId, sortingSettings
+		) {
+			enableDynamicBatching = true,
+			enableInstancing = false
+		};
+
+
+//CustomRenderPipeline
+GraphicsSettings.useScriptableRenderPipelineBatching = false;
+```
+
+
+
+一般来说，GPU 实例化比动态批处理效果更好。
+
+
+
+## Batch可配置
+
+上面说了这么多的优化方法，不同情况下会使用不同的方式。所以我们要改成可配置。
+
+在自定义管线Render中添加对应的bool开关，CameraRenderer -> CustomRenderPipeline -> CustomRenderPipelineAsset 一直加到最顶层用于用户控制。
+
+```csharp
+//CameraRenderer
+
+  /// <summary>
+    /// 最终渲染方式
+    /// </summary>
+    /// <param name="context"></param>
+    /// <param name="camera"></param>
+    /// <param name="useDynamicBatching"></param>
+    /// <param name="useGPUInstancing"></param>
+    public void Render(ScriptableRenderContext context, Camera camera, bool useDynamicBatching, bool useGPUInstancing)
+    {
+        ...
+        DrawVisibleGeometry(useDynamicBatching, useGPUInstancing);
+		...
+    }
+
+ private void DrawVisibleGeometry(bool useDynamicBatching, bool useGPUInstancing)
+    {
+        ...
+        //指出允许使用哪种着色器通道
+        var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting)
+        {
+            enableInstancing = useGPUInstancing,
+            enableDynamicBatching = useDynamicBatching,
+        };
+      ...
+    }
+
+```
+
+
+
+```csharp
+// CustomRenderPipeline
+
+public class CustomRenderPipeline : RenderPipeline
+{
+    private readonly bool _useDynamicBatching;
+    private readonly bool _useGPUInstancing;
+    private CameraRenderer renderer = new CameraRenderer();
+
+    public CustomRenderPipeline(bool useDynamicBatching, bool useGPUInstancing, bool useSRPBatcher)
+    {
+        _useDynamicBatching = useDynamicBatching;
+        _useGPUInstancing = useGPUInstancing;
+        GraphicsSettings.useScriptableRenderPipelineBatching = useSRPBatcher;
+    }
+
+    protected override void Render(ScriptableRenderContext context, Camera[] cameras)
+    {
+        //可以针对不同的Camera设置不同的渲染方式，实例中只是简化成了同一个。项目中这里可以扩展出更多Render类型
+        foreach (var camera in cameras)
+        {
+            renderer.Render(context, camera, _useDynamicBatching, _useGPUInstancing);
+        }
+    }
+}
+```
+
+```csharp
+[CreateAssetMenu(menuName = "Rendering/Custom Render Pipeline")]
+public class CustomRenderPipelineAsset : RenderPipelineAsset
+{
+    [SerializeField]
+    bool useDynamicBatching = true, useGPUInstancing = true, useSRPBatcher = true;
+
+    protected override RenderPipeline CreatePipeline()
+    {
+        //实际渲染对象是 CustomRenderPipeline的实例
+        //Asset是对 实际渲染函数的包装
+        return new CustomRenderPipeline(useDynamicBatching, useGPUInstancing, useSRPBatcher);
+    }
+}
+```
+
+修改后RP Asset面板上就能直接控制了
+
+![](./CustomRenderPipeline/2-13.png)
+
+## 扩展Shader
+
+### 透明度
+
+修改 Unlit Shader 支持透明材质
+
+```glsl
+Shader "Custom RP/Unlit"
+{
+    Properties
+    {
+        _BaseColor("Color", Color) = (1,1,1,1)
+        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlend ("Src Blend", Float) = 1
+        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlend ("Dst Blend", Float) = 0
+        [Enum(Off, 0, On, 1)] _ZWrite ("Z Write", Float) = 1
+    }
+
+    SubShader
+    {
+        Pass
+        {
+            Blend [_SrcBlend] [_DstBlend]
+            ZWrite [_ZWrite]
+            //内置管线使用 CGPROGRAM 
+            //URP 使用 HLSLPROGRAM
+            HLSLPROGRAM
+            #pragma multi_compile_instancing
+            #pragma vertex UnlitPassVertex
+            #pragma fragment UnlitPassFragment
+            //把所有hlsl代码都放在这个文件中
+            #include "UnlitPass.hlsl"
+            ENDHLSL
+        }
+    }
+}
+```
+
+这部分逻辑和内置渲染管线相同，设置Blend混合模式、关闭ZWrite、把渲染队列调整到透明队列中。
+
+![](./CustomRenderPipeline/2-14.png)
+
+![](./CustomRenderPipeline/2-15.png)
+
+### 纹理贴图
+
+```glsl
+// Custom RP/Unlit
+
+Shader "Custom RP/Unlit"
+{
+    Properties
+    {
+        _BaseMap("Texture", 2D) = "white" {}
+        _BaseColor("Color", Color) = (1,1,1,1)
+        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlend ("Src Blend", Float) = 1
+        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlend ("Dst Blend", Float) = 0
+        [Enum(Off, 0, On, 1)] _ZWrite ("Z Write", Float) = 1
+    }
+
+    SubShader
+    {
+        Pass
+        {
+            Blend [_SrcBlend] [_DstBlend]
+            ZWrite [_ZWrite]
+            //内置管线使用 CGPROGRAM 
+            //URP 使用 HLSLPROGRAM
+            HLSLPROGRAM
+            #pragma multi_compile_instancing
+            #pragma vertex UnlitPassVertex
+            #pragma fragment UnlitPassFragment
+            //把所有hlsl代码都放在这个文件中
+            #include "UnlitPass.hlsl"
+            ENDHLSL
+        }
+    }
+}
+```
+
+```glsl
+// UnlitPass.hlsl
+
+// 和c一样 重复include 会造成代码重复 所以加个判断的宏
+#ifndef CUSTOM_UNLIT_PASS_INCLUDED
+#define CUSTOM_UNLIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+TEXTURE2D(_BaseMap);
+SAMPLER(sampler_BaseMap);
+
+UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseMap_ST)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
+UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
+
+struct Attributes
+{
+    float3 positionOS: POSITION;
+    float2 baseUV : TEXCOORD0;
+    // 会根据是否支持 GPU INSTANCE 来添加 attribute
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+struct Varyings {
+    float4 positionCS : SV_POSITION;
+    float2 baseUV : VAR_BASE_UV;
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+Varyings  UnlitPassVertex(Attributes input)
+{
+    Varyings output;
+    UNITY_SETUP_INSTANCE_ID(input);
+    UNITY_TRANSFER_INSTANCE_ID(input, output);
+    float3 positionWS = TransformObjectToWorld(input.positionOS);
+    output.positionCS = TransformWorldToHClip(positionWS);
+    float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
+    output.baseUV = input.baseUV * baseST.xy + baseST.zw;
+    return output;
+}
+
+float4 UnlitPassFragment (Varyings input) : SV_TARGET {
+    UNITY_SETUP_INSTANCE_ID(input);
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    return baseMap * baseColor;
+}
+
+#endif
+
+```
+
+### Alpha Clip
+
+像素值的结果比给定的小，则丢弃。
+
+```glsl
+Shader "Custom RP/Unlit"
+{
+    Properties
+    {
+        _BaseMap("Texture", 2D) = "white" {}
+        _BaseColor("Color", Color) = (1,1,1,1)
+        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlend ("Src Blend", Float) = 1
+        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlend ("Dst Blend", Float) = 0
+        [Enum(Off, 0, On, 1)] _ZWrite ("Z Write", Float) = 1
+        [Toggle(_CLIPPING)] _Clipping ("Alpha Clipping", Float) = 0
+    }
+
+    SubShader
+    {
+        Pass
+        {
+            Blend [_SrcBlend] [_DstBlend]
+            ZWrite [_ZWrite]
+            //内置管线使用 CGPROGRAM 
+            //URP 使用 HLSLPROGRAM
+            HLSLPROGRAM
+            #pragma shader_feature _CLIPPING
+            #pragma multi_compile_instancing
+            #pragma vertex UnlitPassVertex
+            #pragma fragment UnlitPassFragment
+            //把所有hlsl代码都放在这个文件中
+            #include "UnlitPass.hlsl"
+            ENDHLSL
+        }
+    }
+}
+```
+
+```glsl
+// 和c一样 重复include 会造成代码重复 所以加个判断的宏
+#ifndef CUSTOM_UNLIT_PASS_INCLUDED
+#define CUSTOM_UNLIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+// 不是所有平台都支持 常量缓冲区
+// cbuffer UnityPerMaterial
+// {
+//     float4 _BaseColor;
+// }
+
+// CBUFFER_START(UnityPerMaterial) 
+//     float4 _BaseColor;
+// CBUFFER_END
+
+TEXTURE2D(_BaseMap);
+SAMPLER(sampler_BaseMap);
+
+UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseMap_ST)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
+    UNITY_DEFINE_INSTANCED_PROP(float, _Cutoff)
+UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
+
+struct Attributes
+{
+    float3 positionOS: POSITION;
+    float2 baseUV : TEXCOORD0;
+    // 会根据是否支持 GPU INSTANCE 来添加 attribute
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+struct Varyings {
+    float4 positionCS : SV_POSITION;
+    float2 baseUV : VAR_BASE_UV;
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+Varyings  UnlitPassVertex(Attributes input)
+{
+    Varyings output;
+    UNITY_SETUP_INSTANCE_ID(input);
+    UNITY_TRANSFER_INSTANCE_ID(input, output);
+    float3 positionWS = TransformObjectToWorld(input.positionOS);
+    output.positionCS = TransformWorldToHClip(positionWS);
+    float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
+    output.baseUV = input.baseUV * baseST.xy + baseST.zw;
+    return output;
+}
+
+float4 UnlitPassFragment (Varyings input) : SV_TARGET {
+    UNITY_SETUP_INSTANCE_ID(input);
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    float4 base = baseMap * baseColor;
+    #if defined(_CLIPPING)
+    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+    #endif
+    return base;
+}
+
+#endif
+
+```
+
+启用Clip时，shader_feature对应_CLIPPING 会打开，clip函数才会有效。

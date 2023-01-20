@@ -33,7 +33,9 @@ public partial class CameraRenderer
     /// </summary>
     /// <param name="context"></param>
     /// <param name="camera"></param>
-    public void Render(ScriptableRenderContext context, Camera camera)
+    /// <param name="useDynamicBatching"></param>
+    /// <param name="useGPUInstancing"></param>
+    public void Render(ScriptableRenderContext context, Camera camera, bool useDynamicBatching, bool useGPUInstancing)
     {
         this.context = context;
         this.camera = camera;
@@ -46,7 +48,7 @@ public partial class CameraRenderer
         }
 
         Setup();
-        DrawVisibleGeometry();
+        DrawVisibleGeometry(useDynamicBatching, useGPUInstancing);
         DrawUnsupportedShaders();
         DrawGizmo();
         //需要显卡配合 绘制一次 一次draw call
@@ -62,7 +64,7 @@ public partial class CameraRenderer
         buffer.ClearRenderTarget(
             clearFlags <= CameraClearFlags.Depth,
             clearFlags == CameraClearFlags.Color,
-            clearFlags == CameraClearFlags.Color ? camera.backgroundColor.linear: Color.clear);
+            clearFlags == CameraClearFlags.Color ? camera.backgroundColor.linear : Color.clear);
         // buffer.ClearRenderTarget(
         //     true,
         //     true,
@@ -89,15 +91,19 @@ public partial class CameraRenderer
         context.Submit();
     }
 
-    private void DrawVisibleGeometry()
+    private void DrawVisibleGeometry(bool useDynamicBatching, bool useGPUInstancing)
     {
         //确定是否应用正交排序或基于距离的排序
         var sortingSetting = new SortingSettings(camera);
         //指出允许使用哪种着色器通道
-        var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting);
+        var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting)
+        {
+            enableInstancing = useGPUInstancing,
+            enableDynamicBatching = useDynamicBatching,
+        };
         //指出允许哪些渲染队列
         var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
-        
+
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );
@@ -107,7 +113,7 @@ public partial class CameraRenderer
         sortingSetting.criteria = SortingCriteria.CommonTransparent;
         drawingSettings.sortingSettings = sortingSetting;
         filteringSettings.renderQueueRange = RenderQueueRange.transparent;
-        
+
         context.DrawRenderers(
             cullingResults, ref drawingSettings, ref filteringSettings
         );

@@ -12,16 +12,24 @@ Material:
   m_ValidKeywords: []
   m_InvalidKeywords: []
   m_LightmapFlags: 4
-  m_EnableInstancingVariants: 0
+  m_EnableInstancingVariants: 1
   m_DoubleSidedGI: 0
   m_CustomRenderQueue: -1
   stringTagMap: {}
   disabledShaderPasses: []
   m_SavedProperties:
     serializedVersion: 3
-    m_TexEnvs: []
+    m_TexEnvs:
+    - _BaseMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
-    m_Floats: []
+    m_Floats:
+    - _Cutoff: 1
+    - _DstBlend: 0
+    - _SrcBlend: 1
+    - _ZWrite: 1
     m_Colors:
-    - _BaseColor: {r: 0.5304992, g: 1, b: 0.033018887, a: 1}
+    - _BaseColor: {r: 0.53049916, g: 1, b: 0.033018887, a: 1}
   m_BuildTextureStacks: []
