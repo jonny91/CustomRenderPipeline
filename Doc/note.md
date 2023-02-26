@@ -1265,7 +1265,7 @@ float4 UnlitPassFragment (Varyings input) : SV_TARGET {
 
 ```
 
-### Alpha Clip
+### Alpha Clipping
 
 像素值的结果比给定的小，则丢弃。
 
@@ -1371,3 +1371,453 @@ float4 UnlitPassFragment (Varyings input) : SV_TARGET {
 ```
 
 启用Clip时，shader_feature对应_CLIPPING 会打开，clip函数才会有效。
+
+这样的话，unity将会把shader编译成 有/没有 _CLIPPING关键字的两份结果。 
+
+## 补充
+
+上面`Shader`中用了很多宏定义了，第一次读的时候有些懵。比如 
+
+`TEXTURE2D(_BaseMap);
+SAMPLER(sampler_BaseMap);`
+
+查看源码后,在`URP common.hlsl`中有这样的定义
+
+```glsl
+// Include language header
+#if defined (SHADER_API_GAMECORE)
+#include "Packages/com.unity.render-pipelines.gamecore/ShaderLibrary/API/GameCore.hlsl"
+#elif defined(SHADER_API_XBOXONE)
+#include "Packages/com.unity.render-pipelines.xboxone/ShaderLibrary/API/XBoxOne.hlsl"
+#elif defined(SHADER_API_PS4)
+#include "Packages/com.unity.render-pipelines.ps4/ShaderLibrary/API/PSSL.hlsl"
+#elif defined(SHADER_API_PS5)
+#include "Packages/com.unity.render-pipelines.ps5/ShaderLibrary/API/PSSL.hlsl"
+#elif defined(SHADER_API_D3D11)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/D3D11.hlsl"
+#elif defined(SHADER_API_METAL)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/Metal.hlsl"
+#elif defined(SHADER_API_VULKAN)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/Vulkan.hlsl"
+#elif defined(SHADER_API_SWITCH)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/Switch.hlsl"
+#elif defined(SHADER_API_GLCORE)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/GLCore.hlsl"
+#elif defined(SHADER_API_GLES3)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/GLES3.hlsl"
+#elif defined(SHADER_API_GLES)
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/API/GLES2.hlsl"
+#else
+#error unsupported shader api
+#endif
+```
+
+随便看两个`hlsl`文件
+
+```glsl
+// D3D11.hlsl
+#define TEXTURE2D(textureName)                Texture2D textureName
+#define SAMPLER(samplerName)                  SamplerState samplerName
+    
+//GLES2.hlsl
+#define TEXTURE2D(textureName)                  sampler2D textureName
+#define SAMPLER(samplerName)
+```
+
+可以看出是根据不同平台的关键字不一样。
+
+`GLES2`和之前的`builtin shader`的关键字一样，`sampler2D `申明纹理。`builtin`里没有` SamplerState`这东西，所以`GLES2` 里的实现是空语句。
+
+> https://learn.microsoft.com/zh-tw/windows/win32/api/d3d11/nn-d3d11-id3d11samplerstate
+
+
+
+在查询资料时， 发现一些shader 使用 `#ifdef` ，另一些使用`#if defined(XXX)`两种方式来判断关键字，有什么区别呢？
+
+区别在于：
+
+1. `#ifdef`只需要给出宏定义的名称，判断宏定义是否已经被定义过，如果已经定义过，则编译指定的代码块，否则跳过。
+2. `#if defined(xx)`需要在括号中给出具体的宏定义名称，判断宏定义是否被定义过，并且其值是否为非零值（即宏定义是否为真），如果是，则编译指定的代码块，否则跳过。
+
+因此，`#if defined(xx)`可以在宏定义被定义但值为0时跳过特定的代码块，而`#ifdef`只能判断宏定义是否被定义。
+
+
+
+-----
+
+# 直接光照 Directional Lights
+
+## 光线
+
+如果我们想要创建一个更加真实的场景，那么我们就要模拟出光线在物体表面的效果。
+
+### Lit Shader
+
+1. 拷贝上一篇中的Unlit.hlsl 和 UnlitPass.shader ，建立对应的litPass.hlsl \ litPass.shader
+2. 在shader文件中添加自定义的LightMode
+3. 把自定义的pass添加到CameraRenderer里（第一篇中说到，摄像机不会渲染没有指定的shader pass的内容）
+4. 用新成shader创建Opague材质
+
+```glsl
+//litPass.hlsl
+// 和c一样 重复include 会造成代码重复 所以加个判断的宏
+#ifndef CUSTOM_LIT_PASS_INCLUDED
+#define CUSTOM_LIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+
+// 不是所有平台都支持 常量缓冲区
+// cbuffer UnityPerMaterial
+// {
+//     float4 _BaseColor;
+// }
+
+// CBUFFER_START(UnityPerMaterial) 
+//     float4 _BaseColor;
+// CBUFFER_END
+
+TEXTURE2D(_BaseMap);
+SAMPLER(sampler_BaseMap);
+
+UNITY_INSTANCING_BUFFER_START(UnityPerMaterial)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseMap_ST)
+    UNITY_DEFINE_INSTANCED_PROP(float4, _BaseColor)
+    UNITY_DEFINE_INSTANCED_PROP(float, _Cutoff)
+UNITY_INSTANCING_BUFFER_END(UnityPerMaterial)
+
+struct Attributes
+{
+    float3 positionOS: POSITION;
+    float2 baseUV : TEXCOORD0;
+    // 会根据是否支持 GPU INSTANCE 来添加 attribute
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+struct Varyings {
+    float4 positionCS : SV_POSITION;
+    float2 baseUV : VAR_BASE_UV;
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
+Varyings  LitPassVertex(Attributes input)
+{
+    Varyings output;
+    UNITY_SETUP_INSTANCE_ID(input);
+    UNITY_TRANSFER_INSTANCE_ID(input, output);
+    float3 positionWS = TransformObjectToWorld(input.positionOS);
+    output.positionCS = TransformWorldToHClip(positionWS);
+    float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
+    output.baseUV = input.baseUV * baseST.xy + baseST.zw;
+    return output;
+}
+
+float4 LitPassFragment (Varyings input) : SV_TARGET {
+    UNITY_SETUP_INSTANCE_ID(input);
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    float4 base = baseMap * baseColor;
+    #if defined(_CLIPPING)
+    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+    #endif
+    return base;
+}
+
+#endif
+
+```
+
+```glsl
+//litPass.shader
+Shader "Custom RP/Lit"
+{
+    Properties
+    {
+        _BaseMap("Texture", 2D) = "white" {}
+        _BaseColor("Color", Color) = (.5,.5,.5,1)
+        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlend ("Src Blend", Float) = 1
+        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlend ("Dst Blend", Float) = 0
+        [Enum(Off, 0, On, 1)] _ZWrite ("Z Write", Float) = 1
+        [Toggle(_CLIPPING)] _Clipping ("Alpha Clipping", Float) = 0
+    }
+
+    SubShader
+    {
+        Pass
+        {
+            Tags{
+                //使用自定义的光照方式
+                //所以需要在CSharp的CameraRenderer里添加这个SHADER TAG
+                "LightMode" = "CustomLit"
+            }
+            Blend [_SrcBlend] [_DstBlend]
+            ZWrite [_ZWrite]
+            HLSLPROGRAM
+            #pragma shader_feature _CLIPPING
+            #pragma multi_compile_instancing
+            #pragma vertex LitPassVertex
+            #pragma fragment LitPassFragment
+            //把所有hlsl代码都放在这个文件中
+            #include "LitPass.hlsl"
+            ENDHLSL
+        }
+    }
+}
+```
+
+```csharp
+//CameraRenderer.cs
+
+public partial class CameraRenderer
+{
+    ScriptableRenderContext context;
+
+    Camera camera;
+    private const string bufferName = "Render Camera";
+    static ShaderTagId unlitShaderTagId = new ShaderTagId("SRPDefaultUnlit");
+    static ShaderTagId litShaderTagId = new ShaderTagId("CustomLit");
+	....
+ 
+
+    private void DrawVisibleGeometry(bool useDynamicBatching, bool useGPUInstancing)
+    {
+       	...
+        //指出允许使用哪种着色器通道
+        var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSetting)
+        {
+            enableInstancing = useGPUInstancing,
+            enableDynamicBatching = useDynamicBatching,
+        };
+        drawingSettings.SetShaderPassName(1, litShaderTagId);
+        
+      	...
+    }
+
+...
+}
+```
+
+### 法线向量
+
+一个物体被光线照射后什么样子包含了很多因素，包括光线和表面的夹角。我们通过表面的法向量来确定平面的方向。这个向量包含物体空间下的顶点信息。
+
+添加到 `LitPass`的`Attributes`中
+
+```glsl
+// LitPass.hlsl
+
+struct Attributes
+{
+    float3 positionOS: POSITION;
+    float2 baseUV : TEXCOORD0;
+    //模型空间下的法线向量
+    float3 normalOS: NORMAL;
+    // 会根据是否支持 GPU INSTANCE 来添加 attribute
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+```
+
+ 光线也会在每一个片元中进行计算，所以在片元的结构中添加Normal Vector。这是世界坐标系下的。
+
+```glsl
+// LitPass.hlsl
+
+struct Varyings
+{
+    float4 positionCS : SV_POSITION;
+    float2 baseUV : VAR_BASE_UV;
+    //VAR_NORMAL是一个预处理器宏，用于在shader中表示顶点法线向量。
+    //顶点法线向量是垂直于顶点表面的向量，
+    //用于计算光照和阴影效果。
+    //在shader中，可以使用VAR_NORMAL来表示顶点法线向量，从而在渲染时计算正确的光照和阴影效果。
+    float3 normalWS: VAR_NORMAL;
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+```
+
+> 在 Unity Shader 中，常见的变量有很多，包括 `VAR_NORMAL`、`VAR_TANGENT`、`VAR_TEXCOORD0`、`VAR_TEXCOORD1` 等等，它们都代表了不同的意义和信息。使用这些变量，可以让 Shader 在渲染时获得所需的数据，并根据这些数据对像素进行处理和渲染。
+>
+> 在Shader中，TEXCOORD0代表的是Mesh的UV坐标，而VAR_NORMAL代表的是Mesh的法线。如果你的Shader中没有使用到法线信息，那么可以使用TEXCOORD0来代替VAR_NORMAL。
+>
+> 需要注意的是，如果使用了光照等需要法线信息的效果，使用TEXCOORD0代替VAR_NORMAL可能会导致渲染结果不正确。因此，在实际使用中，需要根据Shader的具体实现来确定是否可以使用TEXCOORD0代替VAR_NORMAL。
+
+在顶点函数中把法线转换到世界坐标系
+
+```csharp
+Varyings LitPassVertex(Attributes input)
+{
+    Varyings output;
+    UNITY_SETUP_INSTANCE_ID(input);
+    UNITY_TRANSFER_INSTANCE_ID(input, output);
+    float3 positionWS = TransformObjectToWorld(input.positionOS);
+    output.positionCS = TransformWorldToHClip(positionWS);
+    //转换法线
+    output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+    float4 baseST = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseMap_ST);
+    output.baseUV = input.baseUV * baseST.xy + baseST.zw;
+    return output;
+}
+```
+
+看看法线什么样子的？
+
+在片元着色器中输出显示下rgb值
+
+```csharp
+float4 LitPassFragment(Varyings input) : SV_TARGET
+{
+	...
+    base.rgb = input.normalWS;
+    return base;
+}
+```
+
+![](./CustomRenderPipeline/3-1.png)
+
+上面的代码中因为法线可以为负数，但是rgb值不能为负，所以按照0显示。
+
+尽管法向量在顶点程序里是单位向量，但是通过差值会影响他的长度，通过渲染长度和1之间的差异来显示法线的数据。（放大了10倍）
+
+```glsl
+//LitPass.hlsl
+
+float4 LitPassFragment(Varyings input) : SV_TARGET
+{
+   	...
+    // base.rgb = input.normalWS;
+    base.rgb = abs(length(input.normalWS) - 1.0) * 10;
+    return base;
+}
+```
+
+![](.\CustomRenderPipeline\3-2.png)
+
+使用向量的归一化消除这种失真(原文说有差异，但是我看不出差异)
+
+```glsl
+float4 LitPassFragment(Varyings input) : SV_TARGET
+{
+    UNITY_SETUP_INSTANCE_ID(input);
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    float4 base = baseMap * baseColor;
+    #if defined(_CLIPPING)
+    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+    #endif
+    base.rgb = normalize(input.normalWS);
+    // base.rgb = abs(length(input.normalWS) - 1.0) * 10;
+    return base;
+}
+```
+
+
+
+### 表面特性(Surface)
+
+着色器的光照是模拟光线和物体表现的互相作用，所以我们要跟踪表面的属性。定义一个方便的`Surface`结构来包含数据。并在LitPass.glsl里包含Surface.hlsl
+
+```glsl
+// Surface.hlsl
+
+#ifndef CUSTOM_SURFACE_INCLUDED
+#define CUSTOM_SURFACE_INCLUDED
+
+struct Surface
+{
+    float3 normal;
+    float3 color;
+    float alpha;
+};
+
+#endif
+    
+    
+//LitPass.glsl
+
+#ifndef CUSTOM_LIT_PASS_INCLUDED
+#define CUSTOM_LIT_PASS_INCLUDED
+
+#include "../ShaderLibrary/Common.hlsl"
+#include "../ShaderLibrary/Surface.hlsl"   
+    ...
+```
+
+在Fragement里使用surface结构并且填充数据
+
+```glsl
+//litPass.shader
+float4 LitPassFragment(Varyings input) : SV_TARGET
+{
+    UNITY_SETUP_INSTANCE_ID(input);
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    float4 base = baseMap * baseColor;
+    #if defined(_CLIPPING)
+    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+    #endif
+    
+    Surface surface;
+    surface.normal = normalize(input.normalWS);
+    surface.color = base.rgb;
+    surface.alpha = base.a;
+    return float4(surface.color, surface.alpha);
+}
+```
+
+### 计算光照
+
+创建一个单独`GetLighting`函数，最初的时候返回Y轴分量，把他单独放到Lighting.hlsl文件中。
+
+```glsl
+#ifndef CUSTOM_LIGHTING_INCLUDED
+#define CUSTOM_LIGHTING_INCLUDED
+
+//这里可以不添加include 因为在litPass中统一include了
+//这里加了只是为了ide代码提示 不添加比较好
+#include "./Surface.hlsl"
+
+float3 GetLighting(Surface surface)
+{
+    return surface.normal.y;
+}
+
+#endif
+```
+
+在litPass.hlsl中替换使用GetLighting函数
+
+```glsl
+float4 LitPassFragment(Varyings input) : SV_TARGET
+{
+    UNITY_SETUP_INSTANCE_ID(input);
+    float4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.baseUV);
+    float4 baseColor = UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _BaseColor);
+    float4 base = baseMap * baseColor;
+    #if defined(_CLIPPING)
+    clip(base.a - UNITY_ACCESS_INSTANCED_PROP(UnityPerMaterial, _Cutoff));
+    #endif
+    
+    Surface surface;
+    surface.normal = normalize(input.normalWS);
+    surface.color = base.rgb;
+    surface.alpha = base.a;
+    float3 color = GetLighting(surface);
+    return float4(color, surface.alpha);
+}
+```
+
+![](.\CustomRenderPipeline\3-3.png)
+
+得到上图渲染结果。因为顶部的发现Y轴分量是1 所以最顶端是纯白色 然后逐渐下降到0。下半部分都小于0，所以显示为白色。
+
+在GetLighting中加入颜色。
+
+这里表示为表面的反射率。(albedo)
+
+```glsl
+float3 GetLighting(Surface surface)
+{
+    return surface.normal.y * surface.color;
+}
+```
+
+![](.\CustomRenderPipeline\3-4.png)

@@ -17,6 +17,7 @@ public partial class CameraRenderer
     Camera camera;
     private const string bufferName = "Render Camera";
     static ShaderTagId unlitShaderTagId = new ShaderTagId("SRPDefaultUnlit");
+    static ShaderTagId litShaderTagId = new ShaderTagId("CustomLit");
 
     /// <summary>
     /// 被剔除的物体
@@ -101,6 +102,8 @@ public partial class CameraRenderer
             enableInstancing = useGPUInstancing,
             enableDynamicBatching = useDynamicBatching,
         };
+        drawingSettings.SetShaderPassName(1, litShaderTagId);
+        
         //指出允许哪些渲染队列
         var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
 
